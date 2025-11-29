@@ -45,11 +45,11 @@
                 <span class="text-4xl">🍅</span>
                 <div>
                     <h1 class="text-2xl font-bold">Pomodoro Session Simulator</h1>
-                    <p class="text-sm text-white/70">Transform 30s clips into 1-hour timelapse sessions</p>
+                    <p class="text-sm text-white/70">Transform 120s clips into 1-hour timelapse sessions</p>
                 </div>
             </div>
             <div class="hidden md:flex items-center gap-2 text-sm">
-                <span class="px-3 py-1 bg-white/20 rounded-full">30s → 60s</span>
+                <span class="px-3 py-1 bg-white/20 rounded-full">120s → 60s</span>
                 <span class="px-3 py-1 bg-white/20 rounded-full">Fake 1hr Timer</span>
             </div>
         </div>
@@ -278,6 +278,21 @@
                             </div>
                         </div>
 
+                        <!-- Timelapse Speed -->
+                        <div class="bg-gray-800 rounded-xl p-4">
+                            <h3 class="font-medium mb-3 flex items-center gap-2">
+                                <span>⚡</span> Timelapse Speed
+                            </h3>
+                            <select id="timelapseSpeed" onchange="updateSpeedInfo()" class="w-full bg-gray-700 rounded-lg p-2 text-sm">
+                                <option value="1">1x Speed (60s clip) - No timelapse</option>
+                                <option value="2" selected>2x Speed (120s clip) - Natural timelapse</option>
+                                <option value="3">3x Speed (180s clip) - Fast timelapse</option>
+                                <option value="4">4x Speed (240s clip) - Very fast</option>
+                                <option value="6">6x Speed (360s clip) - Ultra fast</option>
+                            </select>
+                            <p id="speedInfo" class="text-xs text-white/50 mt-2">Record a 2-minute (120s) clip. Plays at 2x speed → 60s output. No looping!</p>
+                        </div>
+
                         <!-- Export Format -->
                         <div class="bg-gray-800 rounded-xl p-4">
                             <h3 class="font-medium mb-3 flex items-center gap-2">
@@ -397,6 +412,22 @@
         // Initialize
         document.getElementById('sessionDate').valueAsDate = new Date();
 
+        // Update speed info text
+        function updateSpeedInfo() {
+            const speed = parseInt(document.getElementById('timelapseSpeed').value);
+            const infoEl = document.getElementById('speedInfo');
+            const clipLength = 60 * speed; // e.g., 2x needs 120s clip
+            
+            if (speed === 1) {
+                infoEl.textContent = `Use a 60-second clip. Plays at normal speed, no timelapse effect.`;
+            } else {
+                const minutes = Math.floor(clipLength / 60);
+                const seconds = clipLength % 60;
+                const timeStr = seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes} minutes`;
+                infoEl.textContent = `Record a ${timeStr} (${clipLength}s) clip. Plays at ${speed}x speed → 60s output. No looping!`;
+            }
+        }
+
         // Drag and Drop
         const dropZone = document.getElementById('dropZone');
         dropZone.addEventListener('dragover', (e) => {
@@ -425,9 +456,20 @@
         function handleVideoFile(file) {
             const url = URL.createObjectURL(file);
             sourceVideoEl.src = url;
+            sourceVideoEl.preload = 'auto';
             sourceVideoEl.load();
-            sourceVideoEl.onloadedmetadata = () => {
+            
+            // Wait for video to be fully loaded and buffered
+            sourceVideoEl.oncanplaythrough = () => {
                 showProcessingSection();
+            };
+            
+            // Fallback if canplaythrough doesn't fire
+            sourceVideoEl.onloadedmetadata = () => {
+                setTimeout(() => {
+                    if (!document.getElementById('processingSection').classList.contains('hidden')) return;
+                    showProcessingSection();
+                }, 500);
             };
         }
 
@@ -666,6 +708,9 @@
                 `${String(Math.floor(outputSeconds / 60)).padStart(2, '0')}:${String(Math.floor(outputSeconds % 60)).padStart(2, '0')} / 01:00`;
         }
 
+        // Timelapse playback state
+        let playbackStartTime = 0;
+
         function togglePlayback() {
             if (isPlaying) {
                 pausePlayback();
@@ -678,18 +723,35 @@
             isPlaying = true;
             document.getElementById('playBtn').textContent = '⏸️ Pause';
             
-            // Play video at 0.5x speed (30s becomes 60s)
-            sourceVideoEl.playbackRate = 0.5;
-            sourceVideoEl.play();
+            const speed = parseInt(document.getElementById('timelapseSpeed').value);
+            
+            // Configure video playback
+            sourceVideoEl.muted = true;
+            sourceVideoEl.playbackRate = speed;
+            
+            // Only loop if speed > 1 (shorter clips need looping)
+            sourceVideoEl.loop = speed > 1;
+            
+            // Reset video to start
+            sourceVideoEl.currentTime = 0;
+            
+            // Track real-world elapsed time (completely independent of video)
+            playbackStartTime = Date.now();
 
+            // Start video
+            sourceVideoEl.play().catch(err => {
+                console.log('Playback error:', err);
+            });
+
+            // Animation loop ONLY updates overlays based on real elapsed time
             function animate() {
                 if (!isPlaying) return;
 
-                const videoDuration = sourceVideoEl.duration || 30;
-                const currentTime = sourceVideoEl.currentTime;
-                // Output progress: currentTime at 0.5x speed means output time = currentTime * 2
-                // But we want 60s total output, so progress = (currentTime / videoDuration) * 100
-                currentProgress = (currentTime / videoDuration) * 100;
+                // Real seconds elapsed since we pressed play
+                const elapsedSeconds = (Date.now() - playbackStartTime) / 1000;
+                
+                // Progress: 0-100% over 60 seconds
+                currentProgress = Math.min((elapsedSeconds / 60) * 100, 100);
                 
                 progressSlider.value = currentProgress;
                 updateOverlayContent(currentProgress);
@@ -702,8 +764,11 @@
                     sourceVideoEl.style.filter = '';
                 }
 
-                if (currentTime >= videoDuration - 0.1) {
+                // Stop after 60 real seconds
+                if (elapsedSeconds >= 60) {
                     pausePlayback();
+                    currentProgress = 100;
+                    updateOverlayContent(100);
                     return;
                 }
 
@@ -715,6 +780,8 @@
         function pausePlayback() {
             isPlaying = false;
             sourceVideoEl.pause();
+            sourceVideoEl.loop = false;
+            sourceVideoEl.playbackRate = 1;
             document.getElementById('playBtn').textContent = '▶️ Preview';
             if (animationId) {
                 cancelAnimationFrame(animationId);
@@ -724,6 +791,7 @@
         function resetPreview() {
             pausePlayback();
             sourceVideoEl.currentTime = 0;
+            sourceVideoEl.loop = false;
             currentProgress = 0;
             progressSlider.value = 0;
             updateOverlayContent(0);
@@ -795,24 +863,30 @@
                 exportStatus.textContent = 'Complete!';
             };
 
+            // Get timelapse speed setting
+            const speed = parseInt(document.getElementById('timelapseSpeed').value);
+            
             // Start recording
             recorder.start();
             sourceVideoEl.currentTime = 0;
-            sourceVideoEl.playbackRate = 0.5;
+            sourceVideoEl.playbackRate = speed;
+            
+            // Only loop if speed > 1 (60s clip at 1x doesn't need looping)
+            sourceVideoEl.loop = speed > 1;
+            
+            const exportStartTime = performance.now();
+            let frameCount = 0;
+            
             await sourceVideoEl.play();
 
-            const videoDuration = sourceVideoEl.duration || 30;
-            const totalFrames = 60 * 30; // 60 seconds at 30fps
-            let frameCount = 0;
-
             function renderFrame() {
-                const currentTime = sourceVideoEl.currentTime;
-                const progress = (currentTime / videoDuration) * 100;
+                const elapsed = (performance.now() - exportStartTime) / 1000;
+                const progress = Math.min((elapsed / 60) * 100, 100);
                 
                 // Update progress UI
                 progressBar.style.width = progress + '%';
                 exportPercent.textContent = Math.floor(progress) + '%';
-                exportStatus.textContent = `Rendering frame ${frameCount}...`;
+                exportStatus.textContent = `Exporting... ${Math.floor(elapsed)}s / 60s`;
 
                 // Clear and draw video
                 exportCtx.fillStyle = '#000';
@@ -917,10 +991,11 @@
                 exportCtx.shadowColor = 'transparent';
                 frameCount++;
 
-                if (currentTime < videoDuration - 0.1) {
+                if (elapsed < 60) {
                     requestAnimationFrame(renderFrame);
                 } else {
                     sourceVideoEl.pause();
+                    sourceVideoEl.loop = false;
                     recorder.stop();
                 }
             }
